@@ -1,0 +1,105 @@
+import time
+import serial
+import serial.rs485
+import numpy as np
+
+
+ser = serial.rs485.RS485(
+        port='/dev/ttyUSB0', #Replace ttyS0 with ttyAM0 for Pi1,Pi2,Pi0
+        baudrate = 9600,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        bytesize=serial.EIGHTBITS,
+        timeout=1
+)
+
+
+ser.rs485_mode = serial.rs485.RS485Settings(False,True)
+
+
+#################################################################
+# data must be char type to send out to dSpace, range: 0-127
+# two bytes for x-position and two bytes for y-position
+
+#two bytes: first byte that is sent is the right byte
+#example : input: 500 >>> 111110100
+#first byte is 1110100
+#second byte is 11
+
+#in dSpace should be in opposite, since this is a serial communication
+#first byte is 11
+# second byte is 1110100
+
+#################################################################
+
+cx = 8
+cx_bin = bin(cx)
+cy = 63
+cy_bin = bin(cy)
+
+
+#byte 1
+byte1 = (cx) & (0x3f)  		#passing the 6 lsb bits
+byte1_char = chr(byte1)		#convert to char
+byte1_bin = bin (byte1)
+		
+
+#byte2
+byte2 = ((cx>>6) & 0x3f)|0x40 	#the first two MSB are the sign for x
+				# + shift right 6 times (0x3f = 0011 1111)
+byte2_char = chr(byte2)
+byte2_bin = bin (byte2)
+
+
+#byte 3
+byte3 = ((cy) & (0x3f))|0x80  		#passing the 6 lsb bits
+byte3_char = chr(byte3)		#convert to char
+byte3_bin = bin (byte3)
+
+#byte4
+byte4 = ((cy>>6) & 0x3f)|0xc0 	#the first two MSB are the sign for y
+				# + shift right 6 times (0x3f = 0011 1111)
+byte4_char = chr(byte4)
+byte4_bin = bin (byte4)
+
+print(cx)
+print('cx',cx_bin)
+print('byte1',byte1_bin)
+print('byte2',byte2_bin)
+
+print(cy)
+print('cy',cy_bin)
+print('byte3',byte3_bin)
+print('byte4',byte4_bin)
+
+
+#start handshake
+
+ser.write(chr(0xff))		#to confirm that data is ready
+print(1)
+ser.write(chr(0xff))
+print(2)
+ser.write(chr(0xff))
+print(3)
+ser.write(chr(0xff))
+print(4)
+ack_byte = 0
+received_byte = 0
+while (ack_byte!= chr(239)): 
+	ack_byte = ser.read()		#to confirm that dSpace is ready 
+print(ord(ack_byte))
+print(5)
+ser.write(byte1_char)
+print(6)
+ser.write(byte2_char)
+print(7)
+ser.write(byte3_char)
+print(8)	
+ser.write(byte4_char)
+print(9)	
+while(received_byte != chr(223)):
+	received_byte = ser.read()
+print(ord(received_byte)) 
+
+		
+			

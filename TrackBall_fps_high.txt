@@ -1,0 +1,215 @@
+# import the necessary packages
+from collections import deque #maintain a list of past location of the ball
+from imutils.video import VideoStream #this package makes some few basic function easier such as resizing
+from imutils.video import WebcamVideoStream
+from imutils.video import FPS
+import numpy as np
+import argparse
+import cv2
+import imutils
+import time
+import serial
+import serial.rs485
+
+ser = serial.rs485.RS485(
+        port='/dev/ttyUSB0', #Replace ttyS0 with ttyAM0 for Pi1,Pi2,Pi0
+        baudrate = 9600,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        bytesize=serial.EIGHTBITS,
+        timeout=1
+)
+
+
+ser.rs485_mode = serial.rs485.RS485Settings(False,True)
+
+# construct the argument parse and parse the arguments
+ap = argparse.ArgumentParser()
+
+#optional argument 1(--video) : if this path is supplied opencv grab a 
+#pointer to the video file and read frames from it. if not, 
+#opencv will try to access the webcam
+ap.add_argument("-v", "--video",
+	help="path to the (optional) video file")
+	
+#optional argument 2 (--buffer): is the maximum size of our deque
+#which maintains a list of previous (x,y)-coordinates 
+#the greater the buffer the longer tail for the ball
+ap.add_argument("-b", "--buffer", type=int, default=0,
+	help="max buffer size")
+args = vars(ap.parse_args())
+
+ap.add_argument("-n", "--num-frames", type=int, default=100,
+	help="# of frames to loop over for FPS test")
+	
+ap.add_argument("-d", "--display", type=int, default=-1,
+	help="Whether or not frames should be displayed")
+args = vars(ap.parse_args())
+print("[INFO] sampling frames from webcam...")
+
+
+# define the lower and upper boundaries of the "green"
+# ball in the HSV color space, then initialize the
+# list of tracked points
+Lower_Bound_color = (81,91,0)
+Upper_Bound_color = (255,255,39)
+pts = deque(maxlen=args["buffer"])
+# if a video path was not supplied, grab the reference
+# to the webcam
+if not args.get("video", False):
+	vs = WebcamVideoStream(src=0).start()
+	
+	fps = FPS().start()
+# otherwise, grab a reference to the video file
+else:
+	vs = WebcamVideoStream(src=0).start()
+	fps = FPS().start()
+	
+# allow the camera or video file to warm up
+time.sleep(2.0)
+
+# keep looping
+while True:
+	# grab the current frame
+	frame = vs.read()
+	
+	# handle the frame from VideoCapture or VideoStream
+	frame = frame[1] if args.get("video", False) else frame
+	# if we are viewing a video and we did not grab a frame,
+	# then we have reached the end of the video
+	if frame is None:
+		break
+	# resize the frame, blur it, and convert it to the HSV
+	# color space
+	
+	frame = imutils.resize(frame, width=400)
+	
+	blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+	
+	hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+	
+	# construct a mask for the color "green", then perform
+	# a series of dilations and erosions to remove any small
+	# blobs left in the mask
+	mask = cv2.inRange(hsv, Lower_Bound_color, Upper_Bound_color)
+	
+	#mask = cv2.erode(mask, None, iterations=2)
+	#mask = cv2.dilate(mask, None, iterations=2)
+	
+		# find contours in the mask and initialize the current
+	# (x, y) center of the ball
+	cnts = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL,
+		cv2.CHAIN_APPROX_SIMPLE)
+	cnts = imutils.grab_contours(cnts)
+	center = None
+	# only proceed if at least one contour was found
+	if len(cnts) > 0:
+		# find the largest contour in the mask, then use
+		# it to compute the minimum enclosing circle and
+		# centroid
+		
+		c = max(cnts, key=cv2.contourArea)
+		((x, y), radius) = cv2.minEnclosingCircle(c)
+		M = cv2.moments(c)
+		
+		try:	
+			center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+			Cx = int(M["m10"] / M["m00"])
+			Cy = int(M["m01"] / M["m00"])
+		except ZeroDivisionError:
+			Cx =0
+			Cy =0
+
+
+		tempStr = str(Cx)+","+str(Cy)
+		
+		# only proceed if the radius meets a minimum size
+		if radius > 5:
+			# draw the circle and centroid on the frame,
+			# then update the list of tracked points
+			cv2.circle(frame, (int(x), int(y)), int(radius),
+				(0, 0, 255), 2)
+			cv2.circle(frame, center, 5, (0, 0, 0), -1)
+			cv2.putText(frame, tempStr,(Cx, Cy),cv2.FONT_HERSHEY_TRIPLEX,0.4,(255,255,255),1)
+			
+			#byte 1
+			byte1 = (Cx) & (0x3f)  		#passing the 6 lsb bits
+			byte1_char = chr(byte1)		#convert to char
+			byte1_bin = bin (byte1)
+					
+			
+			#byte2
+			byte2 = ((Cx>>6) & 0x3f)|0x40 	#the first two MSB are the sign for x
+							# + shift right 6 times (0x3f = 0011 1111)
+			byte2_char = chr(byte2)
+			byte2_bin = bin (byte2)
+			
+			
+			#byte 3
+			byte3 = ((Cy) & (0x3f))|0x80  		#passing the 6 lsb bits
+			byte3_char = chr(byte3)		#convert to char
+			byte3_bin = bin (byte3)
+			
+			#byte4
+			byte4 = ((Cy>>6) & 0x3f)|0xc0 	#the first two MSB are the sign for y
+							# + shift right 6 times (0x3f = 0011 1111)
+			byte4_char = chr(byte4)
+			byte4_bin = bin (byte4)
+			
+			ser.write(chr(0xff))		#to confirm that data is ready
+			ser.write(chr(0xff))
+			ser.write(chr(0xff))
+			ser.write(chr(0xff))
+
+			ack_byte = 0
+			received_byte = 0
+			while (ack_byte != chr(239)): 
+				ack_byte = ser.read()		#to confirm that dSpace is ready 
+			print(ord(ack_byte))
+			
+			ser.write(byte1_char)
+			
+			ser.write(byte2_char)
+
+			ser.write(byte3_char)
+	
+			ser.write(byte4_char)
+			
+			while(received_byte != chr(223)):
+				received_byte = ser.read()
+				
+			print(ord(received_byte)) 
+			
+			
+
+	# update the points queue
+	pts.appendleft(center)
+		# loop over the set of tracked points
+	for i in range(1, len(pts)):
+		# if either of the tracked points are None, ignore
+		# them
+		if pts[i - 1] is None or pts[i] is None:
+			continue
+		# otherwise, compute the thickness of the line and
+		# draw the connecting lines
+		thickness = int(np.sqrt(args["buffer"] / float(i + 1)) * 2.5)
+		cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
+	# show the frame to our screen
+	cv2.imshow("Frame", frame)
+	#cv2.imshow("mask",mask)
+	key = cv2.waitKey(1) & 0xFF
+	fps.update()
+	# if the 'q' key is pressed, stop the loop
+	if key == ord("q"):
+		break
+fps.stop()
+print("[INFO] elasped time: {:.2f}".format(fps.elapsed()))
+print("[INFO] approx. FPS: {:.2f}".format(fps.fps()))
+# if we are not using a video file, stop the camera video stream
+if not args.get("video", False):
+	vs.stop()
+# otherwise, release the camera
+else:
+	vs.release()
+# close all windows
+cv2.destroyAllWindows()
